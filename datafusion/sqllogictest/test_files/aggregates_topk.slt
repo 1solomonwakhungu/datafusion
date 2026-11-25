@@ -932,3 +932,54 @@ LIMIT 2;
 
 statement ok
 DROP TABLE topk_computed_alias;
+
+# TopK aggregation must not push a limit below a window operator
+statement ok
+CREATE TABLE topk_window (g INT, v INT) AS VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60);
+
+query III
+SELECT g, max(v) AS m, count(*) OVER () AS total
+FROM topk_window
+GROUP BY g
+ORDER BY m DESC NULLS LAST
+LIMIT 2;
+----
+6 60 6
+5 50 6
+
+query III
+SELECT g, max(v) AS m, row_number() OVER (ORDER BY g) AS rn
+FROM topk_window
+GROUP BY g
+ORDER BY m DESC NULLS LAST
+LIMIT 2;
+----
+6 60 6
+5 50 5
+
+query TT
+EXPLAIN SELECT g, max(v) AS m, row_number() OVER (ORDER BY g) AS rn
+FROM topk_window
+GROUP BY g
+ORDER BY m DESC NULLS LAST
+LIMIT 2;
+----
+logical_plan
+01)Sort: m DESC NULLS LAST, fetch=2
+02)--Projection: topk_window.g, max(topk_window.v) AS m, row_number() ORDER BY [topk_window.g ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW AS rn
+03)----WindowAggr: windowExpr=[[row_number() ORDER BY [topk_window.g ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
+04)------Aggregate: groupBy=[[topk_window.g]], aggr=[[max(topk_window.v)]]
+05)--------TableScan: topk_window projection=[g, v]
+physical_plan
+01)ProjectionExec: expr=[g@0 as g, max(topk_window.v)@1 as m, row_number() ORDER BY [topk_window.g ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rn]
+02)--SortExec: TopK(fetch=2), expr=[max(topk_window.v)@1 DESC NULLS LAST], preserve_partitioning=[false]
+03)----BoundedWindowAggExec: wdw=[row_number() ORDER BY [topk_window.g ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "row_number() ORDER BY [topk_window.g ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
+04)------SortPreservingMergeExec: [g@0 ASC NULLS LAST]
+05)--------SortExec: expr=[g@0 ASC NULLS LAST], preserve_partitioning=[true]
+06)----------AggregateExec: mode=FinalPartitioned, gby=[g@0 as g], aggr=[max(topk_window.v)]
+07)------------RepartitionExec: partitioning=Hash([g@0], 4), input_partitions=1
+08)--------------AggregateExec: mode=Partial, gby=[g@0 as g], aggr=[max(topk_window.v)]
+09)----------------DataSourceExec: partitions=1, partition_sizes=[1]
+
+statement ok
+DROP TABLE topk_window;
