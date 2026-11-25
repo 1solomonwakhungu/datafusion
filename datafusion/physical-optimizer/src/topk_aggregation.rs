@@ -19,6 +19,7 @@ use datafusion_physical_plan::execution_plan::CardinalityEffect;
 use datafusion_physical_plan::materialized_cte::MaterializedCteExec;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::sorts::sort::SortExec;
+use datafusion_physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use itertools::Itertools;
 
 /// An optimizer rule that transforms Sort + Limit above a grouped Aggregate to use
@@ -153,6 +154,13 @@ impl TopKAggregation {
                 // CTE body, which every reference to the CTE reads in full.
                 // A limit in the body would drop rows that they need. Skip
                 // both children; the flag also keeps later siblings unchanged.
+                cardinality_preserved = false;
+                return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
+            } else if plan.downcast_ref::<WindowAggExec>().is_some()
+                || plan.downcast_ref::<BoundedWindowAggExec>().is_some()
+            {
+                // Window functions see every row of their partition; a limit
+                // below them changes their output.
                 cardinality_preserved = false;
                 return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
             } else {
